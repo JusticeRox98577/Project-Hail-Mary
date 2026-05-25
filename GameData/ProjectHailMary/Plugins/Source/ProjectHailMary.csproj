@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Project Hail Mary KSP Mod - Plugin Build
+  ==========================================
+  Build against KSP 1.12.x assemblies.
+  Set KSP_DIR environment variable or update the HintPath values below
+  to point to your KSP installation's KSP_Data/Managed folder.
+
+  Build:  dotnet build  (or msbuild)
+  Output: ../../ProjectHailMary.dll   (copied into GameData automatically)
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <AssemblyName>ProjectHailMary</AssemblyName>
+    <RootNamespace>ProjectHailMary</RootNamespace>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>8.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <Optimize Condition="'$(Configuration)'=='Release'">true</Optimize>
+    <OutputPath>../../</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <!-- KSP assembly references — update KSP_DIR if needed -->
+  <PropertyGroup>
+    <KSP_DIR Condition="'$(KSP_DIR)'==''">C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program</KSP_DIR>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(KSP_DIR)\KSP_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(KSP_DIR)\KSP_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(KSP_DIR)\KSP_Data\Managed\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="ModuleAstrophageDrive.cs" />
+    <Compile Include="AstrophageScenario.cs" />
+  </ItemGroup>
+
+</Project>
