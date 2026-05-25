@@ -16,9 +16,10 @@ from pathlib import Path
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-SCRIPT_DIR   = Path(__file__).parent
-MODELS_DIR   = SCRIPT_DIR / "GameData" / "ProjectHailMary" / "Models"
-DEFAULT_WATCH = Path.home() / "Desktop"   # change if you export elsewhere
+SCRIPT_DIR    = Path(__file__).parent
+KSP_MODELS    = Path(r"D:\KSP\Kerbal Space Program\GameData\ProjectHailMary\Models")
+REPO_MODELS   = SCRIPT_DIR / "GameData" / "ProjectHailMary" / "Models"
+DEFAULT_WATCH = Path(r"C:\Users\Justice\Pictures\Ksp Blender Export")
 
 VALID_PARTS = {
     "astrophage_tank_large",
@@ -42,9 +43,12 @@ def deploy(src: Path):
     if name not in VALID_PARTS:
         return False
 
-    dest = MODELS_DIR / src.name
-    shutil.copy2(src, dest)
-    log(f"Deployed: {src.name}  →  {dest}")
+    for dest_dir in (KSP_MODELS, REPO_MODELS):
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest_dir / src.name)
+        log(f"  → {dest_dir / src.name}")
+
+    log(f"Deployed: {src.name}")
     return True
 
 # ── Watcher ───────────────────────────────────────────────────────────────────
@@ -60,7 +64,8 @@ def watch(folder: Path):
     print("  Project Hail Mary — Auto Deploy")
     print("=" * 55)
     print(f"  Watching : {folder}")
-    print(f"  Models   : {MODELS_DIR}")
+    print(f"  KSP dest : {KSP_MODELS}")
+    print(f"  Repo dest: {REPO_MODELS}")
     print(f"  Parts    : {', '.join(sorted(VALID_PARTS))}")
     print("=" * 55)
     print("  Export a .mu from Blender and it will appear here.")
