@@ -58,7 +58,8 @@ def watch(folder: Path):
         print(f"ERROR: Watch folder does not exist: {folder}")
         sys.exit(1)
 
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    KSP_MODELS.mkdir(parents=True, exist_ok=True)
+    REPO_MODELS.mkdir(parents=True, exist_ok=True)
 
     print("=" * 55)
     print("  Project Hail Mary — Auto Deploy")
