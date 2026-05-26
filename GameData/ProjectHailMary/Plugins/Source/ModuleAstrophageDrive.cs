@@ -5,41 +5,30 @@ using UnityEngine;
 namespace ProjectHailMary
 {
     /// <summary>
-    /// Custom engine module for the Astrophage photon drive.
-    ///
-    /// Key behaviours beyond a stock engine:
-    ///   • Astrophage consumption scales with thrust level (organisms are
-    ///     "pushed" harder when more thrust is demanded).
-    ///   • An orange/gold engine glow brightens with thrust level.
-    ///   • A "Breeding Mode" can slowly generate Astrophage when the engine
-    ///     is off and the vessel is near a star, simulating organisms feeding.
-    ///   • Thrust and ISP are constant in vacuum (photon drive — no exhaust
-    ///     velocity change with altitude, except near 0 in thick atmosphere
-    ///     because the plume is disrupted).
+    /// Companion module for the Astrophage photon drive.
+    /// Sits alongside ModuleEnginesFX and adds:
+    ///   • Breeding Mode — slowly generates Astrophage in nearby tanks when
+    ///     the engine is off and the vessel is in adequate stellar flux.
+    ///   • An orange/gold point light that scales with throttle level.
+    ///   • GUI readouts for drive status, fuel flow, and solar flux.
     /// </summary>
     public class ModuleAstrophageDrive : PartModule
     {
         // ── Config fields ──────────────────────────────────────────────────
 
         [KSPField]
-        public float maxThrust = 450f;          // kN
+        public float maxThrust = 1800f;
 
         [KSPField]
-        public float minThrust = 0f;
+        public float astrophageConsumptionRate = 0.00012f;  // u/s at full thrust (display only)
 
         [KSPField]
-        public string thrustVectorTransformName = "thrustTransform";
+        public float breedingRate = 0.04f;      // u/s added to tanks when breeding
 
         [KSPField]
-        public float astrophageConsumptionRate = 0.00012f;  // units/s at full thrust
+        public float breedingMinFlux = 200f;    // W/m² floor — organisms won't breed in the dark
 
-        [KSPField]
-        public float breedingRate = 0.002f;     // units/s when breeding near star
-
-        [KSPField]
-        public float breedingMinFlux = 200f;    // W/m² minimum solar flux to breed
-
-        // ── Persistent state ───────────────────────────────────────────────
+        // ── Persistent GUI state ───────────────────────────────────────────
 
         [KSPField(isPersistant = true, guiActive = true, guiActiveEditor = true,
                   guiName = "Breeding Mode")]
@@ -58,35 +47,30 @@ namespace ProjectHailMary
         // ── Private state ──────────────────────────────────────────────────
 
         private ModuleEnginesFX _stockEngine;
-        private Light _engineLight;
-        private bool _engineRunning = false;
-        private float _throttle = 0f;
+        private Light           _engineLight;
+        private float           _throttle = 0f;
 
         // ── Lifecycle ──────────────────────────────────────────────────────
 
         public override void OnStart(StartState state)
         {
             base.OnStart(state);
-
             _stockEngine = part.FindModuleImplementing<ModuleEnginesFX>();
-
-            if (state == StartState.Editor) return;
-
-            SetupEngineLight();
+            if (state != StartState.Editor) SetupEngineLight();
         }
 
         private void SetupEngineLight()
         {
-            var lightObj = new GameObject("AstrophageDriveLight");
-            lightObj.transform.SetParent(part.transform, false);
-            lightObj.transform.localPosition = new Vector3(0, -2.5f, 0);
+            var go = new GameObject("AstrophageDriveLight");
+            go.transform.SetParent(part.transform, false);
+            go.transform.localPosition = new Vector3(0f, -2.5f, 0f);
 
-            _engineLight          = lightObj.AddComponent<Light>();
-            _engineLight.type     = LightType.Point;
-            _engineLight.color    = new Color(1f, 0.6f, 0.15f, 1f);
-            _engineLight.range    = 0f;
+            _engineLight           = go.AddComponent<Light>();
+            _engineLight.type      = LightType.Point;
+            _engineLight.color     = new Color(1f, 0.6f, 0.15f, 1f);
+            _engineLight.range     = 0f;
             _engineLight.intensity = 0f;
-            _engineLight.enabled  = true;
+            _engineLight.enabled   = true;
         }
 
         // ── Update ─────────────────────────────────────────────────────────
@@ -103,20 +87,13 @@ namespace ProjectHailMary
 
         private void UpdateSolarFlux()
         {
-            // KSP exposes solar flux through PhysicsGlobals after 1.2
             double flux = 0;
-            foreach (var star in FlightGlobals.Bodies)
+            foreach (var body in FlightGlobals.Bodies)
             {
-                if (star.GetTemperature(0) > 3000)  // rough star check
-                {
-                    double dist = Vector3d.Distance(
-                        vessel.GetWorldPos3D(),
-                        star.position
-                    );
-                    // Inverse-square law; star.radiusAtmosphere used as proxy luminosity
-                    double lum = star.Mass * 3.828e26 / 1.989e30; // solar luminosities
-                    flux += lum * 3.828e26 / (4 * Math.PI * dist * dist);
-                }
+                if (body.GetTemperature(0) < 3000) continue;
+                double dist = Vector3d.Distance(vessel.GetWorldPos3D(), body.position);
+                double lum  = body.Mass * 3.828e26 / 1.989e30;   // solar luminosities
+                flux += lum * 3.828e26 / (4 * Math.PI * dist * dist);
             }
             currentSolarFlux = (float)flux;
         }
@@ -125,48 +102,50 @@ namespace ProjectHailMary
         {
             if (_stockEngine == null) return;
 
-            _engineRunning = _stockEngine.isOperational && _stockEngine.currentThrottle > 0f;
-            _throttle      = _engineRunning ? _stockEngine.currentThrottle : 0f;
+            bool running = _stockEngine.isOperational && _stockEngine.currentThrottle > 0f;
+            _throttle    = running ? _stockEngine.currentThrottle : 0f;
 
-            if (_engineRunning)
+            if (running)
             {
                 currentConsumption = astrophageConsumptionRate * _throttle;
-                driveStatus = $"Active ({_throttle * 100f:F0}%)";
+                driveStatus        = $"Active ({_throttle * 100f:F0}%)";
             }
             else
             {
                 currentConsumption = 0f;
-                driveStatus = breedingModeEnabled ? "Breeding" : "Standby";
+                driveStatus        = breedingModeEnabled ? "Breeding" : "Standby";
             }
         }
 
         private void UpdateBreeding()
         {
-            if (!breedingModeEnabled || _engineRunning) return;
+            if (!breedingModeEnabled || _throttle > 0f) return;
             if (currentSolarFlux < breedingMinFlux) return;
 
-            // Only breed if there is capacity
-            var astrophageRes = part.Resources["Astrophage"];
-            if (astrophageRes == null) return;
+            double toAdd = breedingRate * TimeWarp.fixedDeltaTime;
 
-            double available = astrophageRes.maxAmount - astrophageRes.amount;
-            if (available <= 0) return;
-
-            double grown = Math.Min(breedingRate * TimeWarp.fixedDeltaTime, available);
-            astrophageRes.amount += grown;
+            // Distribute to all tanks on the vessel that hold Astrophage
+            foreach (Part p in vessel.parts)
+            {
+                if (toAdd <= 0.0) break;
+                var res = p.Resources["Astrophage"];
+                if (res == null) continue;
+                double space = res.maxAmount - res.amount;
+                if (space <= 0.0) continue;
+                double add  = Math.Min(space, toAdd);
+                res.amount += add;
+                toAdd      -= add;
+            }
         }
 
         private void UpdateLight()
         {
             if (_engineLight == null) return;
 
-            float targetIntensity = _throttle * 6f;
-            float targetRange     = _throttle * 80f;
+            _engineLight.intensity = Mathf.Lerp(_engineLight.intensity, _throttle * 6f,  0.1f);
+            _engineLight.range     = Mathf.Lerp(_engineLight.range,     _throttle * 80f, 0.1f);
 
-            _engineLight.intensity = Mathf.Lerp(_engineLight.intensity, targetIntensity, 0.1f);
-            _engineLight.range     = Mathf.Lerp(_engineLight.range,     targetRange,     0.1f);
-
-            // Subtle colour shift: low thrust = orange, high thrust = blue-white (Cherenkov-like)
+            // Low throttle = deep orange; high throttle = blue-white Cherenkov glow
             _engineLight.color = Color.Lerp(
                 new Color(1f, 0.55f, 0.1f),
                 new Color(0.7f, 0.85f, 1f),
@@ -174,7 +153,7 @@ namespace ProjectHailMary
             );
         }
 
-        // ── KSP Events ────────────────────────────────────────────────────
+        // ── KSP Events ─────────────────────────────────────────────────────
 
         [KSPEvent(guiActive = true, guiName = "Toggle Breeding Mode", guiActiveEditor = false)]
         public void ToggleBreeding()
@@ -184,8 +163,7 @@ namespace ProjectHailMary
                 breedingModeEnabled
                     ? "Astrophage Breeding Mode: ENABLED — organisms will multiply near stars."
                     : "Astrophage Breeding Mode: DISABLED.",
-                4f,
-                ScreenMessageStyle.UPPER_CENTER
+                4f, ScreenMessageStyle.UPPER_CENTER
             );
         }
 
