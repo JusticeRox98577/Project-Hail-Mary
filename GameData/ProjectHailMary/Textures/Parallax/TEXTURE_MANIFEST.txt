@@ -1,0 +1,80 @@
+Project Hail Mary — Parallax Texture Manifest
+=============================================
+
+All textures go in this folder: GameData/ProjectHailMary/Textures/Parallax/
+
+EXPORT SETTINGS (Substance Painter / Photoshop / GIMP):
+  Format:      DDS
+  Compression: BC3/DXT5 for normal maps (linear, no sRGB)
+               BC1/DXT1 for albedo maps (sRGB)
+  Resolution:  2048×2048 recommended (1024×1024 minimum)
+  Mipmaps:     YES (generate in DDS export)
+  Normal maps: DirectX convention (Y / green channel NOT flipped)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TAU CETI e  (teal-blue rocky ocean world, alien sky)
+  TauCetiE_low.dds        — wet dark teal stone, algae-like patches, blue-grey
+  TauCetiE_low_nrm.dds    — matching normal map
+  TauCetiE_mid.dds        — drier teal-grey basalt, rougher surface
+  TauCetiE_mid_nrm.dds
+  TauCetiE_high.dds       — pale grey-white peaks, thin frost coating
+  TauCetiE_high_nrm.dds
+  TauCetiE_steep.dds      — dark fractured cliff rock, blue-black
+  TauCetiE_steep_nrm.dds
+
+TAU CETI d  (arid desert super-Earth, warm and tan)
+  TauCetiD_low.dds        — fine orange-tan sand, rippled dunes
+  TauCetiD_low_nrm.dds
+  TauCetiD_steep.dds      — layered sandstone and red-brown shale
+  TauCetiD_steep_nrm.dds
+  (mid and high reuse low/steep — see PHM_Parallax.cfg)
+
+TAU CETI f  (icy outer world, pale blue-white)
+  TauCetiF_low.dds        — blue-white granular ice, fine cracking
+  TauCetiF_low_nrm.dds
+  TauCetiF_steep.dds      — sheer blue-grey ice cliffs with fracture lines
+  TauCetiF_steep_nrm.dds
+  (mid and high reuse low/steep — see PHM_Parallax.cfg)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ERIDIAN HOME  (Rocky's homeworld — amber, dense atmosphere, 360 K surface)
+  EridianHome_low.dds     — baked amber-orange clay, heat-cracked, dry
+  EridianHome_low_nrm.dds
+  EridianHome_mid.dds     — ochre basalt with orange mineral deposits
+  EridianHome_mid_nrm.dds
+  EridianHome_high.dds    — pale tan wind-scoured ridge rock
+  EridianHome_high_nrm.dds
+  EridianHome_steep.dds   — dark brown fracture faces, angular slabs
+  EridianHome_steep_nrm.dds
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WORLD-MAP TEXTURES  (for Kopernicus ScaledVersion — the distant sphere view)
+Go in: GameData/ProjectHailMary/Textures/  (one level up)
+Format: DDS BC1/DXT1, 2048×1024 (cylindrical equirectangular projection)
+
+  TauCetiE_color.dds      — full planet color map (blue-teal oceans, teal land)
+  TauCetiE_normal.dds     — planet-scale normal map (mountains as bumps)
+  TauCetiD_color.dds      — tan-gold desert world with polar ice
+  TauCetiD_normal.dds
+  TauCetiF_color.dds      — pale blue-white ice world
+  TauCetiF_normal.dds
+  EridianHome_color.dds   — deep amber-orange with orange cloud swirls
+  EridianHome_normal.dds
+  FortyEridaniI_color.dds — dark red-orange scorched rock
+  FortyEridaniI_normal.dds
+  FortyEridaniIII_color.dds — rusty tan-grey cold world
+  FortyEridaniIII_normal.dds
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+HEIGHTMAP TEXTURES  (for Kopernicus PQS terrain elevation)
+Format: DDS BC4/ATI1 (single-channel R8), 2048×1024
+
+  TauCetiE_height.dds     — elevation map: brighter = higher terrain
+  TauCetiD_height.dds
+  TauCetiF_height.dds
+  EridianHome_height.dds
+  (others: add when planet terrain sculpting is complete)
