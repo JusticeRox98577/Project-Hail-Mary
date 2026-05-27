@@ -191,6 +191,36 @@ def add_polar_ice(color, cap_lat=0.82, blend_width=0.06,
     return np.clip(blended, 0, 255).astype(np.uint8)
 
 
+def add_polar_fade(color, fade_frac=0.18, pole_color=None):
+    """
+    Fade horizontal band texture to a solid colour near the poles.
+    Prevents the ugly 'scrunching' that happens when bands converge at the
+    top/bottom of a sphere.  fade_frac = fraction of image height over which
+    the fade occurs (e.g. 0.18 = top/bottom 18% fades to solid).
+    pole_color defaults to the average colour of the equatorial strip.
+    """
+    H, W = color.shape[:2]
+    if pole_color is None:
+        # Sample the mid-latitude strip to get a representative zone colour
+        mid_s = int(H * 0.38)
+        mid_e = int(H * 0.62)
+        pole_color = color[mid_s:mid_e].mean(axis=(0, 1))
+
+    pole_color = np.array(pole_color, dtype=np.float64)
+
+    # Distance from nearest pole: 0 at pole, 1 at equator
+    ys    = np.linspace(0.0, 1.0, H)
+    pdist = np.minimum(ys, 1.0 - ys) * 2.0          # 0 at poles, 1 at equator
+
+    # Smooth S-curve mask (squared cosine feel)
+    raw  = np.clip(pdist / fade_frac, 0.0, 1.0)
+    mask = raw * raw * (3.0 - 2.0 * raw)             # smoothstep
+    mask = mask[:, np.newaxis, np.newaxis]            # (H,1,1)
+
+    blended = color.astype(np.float64) * mask + pole_color * (1.0 - mask)
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
 # ── I/O ────────────────────────────────────────────────────────────────────────
 
 def save_png(arr, rel_path):
@@ -249,6 +279,12 @@ def generate_gas_world(name, seed, band_count, band_colors, cell_colors=None,
             + cell_rgb * hi_mask * 0.45,
             0, 255
         ).astype(np.uint8)
+
+    # Fade bands to a solid colour near the poles to prevent sphere-pinching.
+    # Use the bright zone colour (last stop in band_colors) as the pole colour
+    # so the caps look like zone cloud-tops rather than a blended smear.
+    pole_rgb = band_colors[-1][1]
+    color = add_polar_fade(color, fade_frac=0.18, pole_color=pole_rgb)
 
     # Height map: simple FBM (surface invisible, but MapSODemand needs a file)
     hfield = fbm(WIDTH, HEIGHT, seed + 20, octaves=5, roughness=0.50)
