@@ -103,19 +103,27 @@ Tools/
 - Tau Ceti star + 6 planets load without errors
 - 40 Eridani star + 3 planets load without errors
 - Adrian (TauCetiE) has green atmosphere glow from AtmosphereFromGround
-- DDS world map textures committed (BC1, fixed header) — awaiting in-game confirmation
-- All parts visible in VAB via stock model fallbacks
+- Planet world-map PNGs committed (DDS removed — no OnDemandStorage conflicts)
+- Kopernicus cache (.bin) present for all 11 bodies → planets load correctly
 - Astrophage engine + tanks functional
 - Science experiments defined
 - Tech tree nodes defined
+- EVE cloud configs: 4-layer configs for Adrian/Erid/TauCetiC with counter-rotating layers
+- EVE cloud textures: large-scale cloud masses + near-opaque smog (fixed TV-static noise)
+- Parallax terrain configs: all 9 rocky bodies fully configured (Low/Mid/High/Steep blending)
+- Custom 3D models: HailMaryPod, AstrophageDrive, both tanks (.mu files committed)
+  PHM_ModelFallbacks.cfg fallbacks removed for these 4 — parts now use real geometry
+- BlipA, PetrovaScanner, RockyComms still use stock model placeholders
 
 ### Not yet done / known issues
-- DDS textures: gray planet issue may persist — needs in-game test after latest fix
-- Custom 3D models: all parts still use stock model placeholders
-- Parallax tiling textures: DDS files listed in TEXTURE_MANIFEST.txt not yet created
-- EridianHome AtmosphereFromGround produces bluish sky (invWaveLength tuned for Rayleigh, not orange)
+- EVE + Parallax require separate CKAN install (plugin DLLs not in the repo)
+  → Active test KSP at D:\Ksp Test File\ does NOT have EVE/Parallax/Scatterer installed
+  → Install via CKAN: EnvironmentalVisualEnhancements Redux, ParallaxContinued, Scatterer
+- Parallax terrain DDS textures not yet committed — need texconv conversion
+  (PNGs in GameData/ProjectHailMary/Textures/EVE/ committed; Parallax DDS missing)
+- EridianHome AtmosphereFromGround produces bluish sky (invWaveLength tuned for Rayleigh)
 - No biomes defined for custom planets
-- No surface scatter (rocks/features) beyond what Parallax config references
+- BlipA, PetrovaScanner, RockyComms still need custom .mu models
 
 ### How to regenerate textures
 ```
