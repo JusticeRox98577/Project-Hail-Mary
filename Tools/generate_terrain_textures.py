@@ -239,8 +239,10 @@ def save_dds(arr, path, label=""):
 def make_terrain_texture(name, seed, size, stops, normal_strength=8.0,
                          roughness=0.60, octaves=8, extra_seed=None):
     """
-    Generate one terrain tile (albedo PNG + normal PNG + DDS versions).
-    Also writes DDS directly so the mod can ship without texconv.
+    Generate one terrain tile.
+    Writes PNGs directly to GameData (committed) — Parallax loads PNGs fine and
+    Unity compresses them at runtime. No DDS conversion needed.
+    DDS files are gitignored and not required.
     """
     field = fbm_detail(size, seed, octaves=octaves, roughness=roughness)
     if extra_seed is not None:
@@ -251,17 +253,13 @@ def make_terrain_texture(name, seed, size, stops, normal_strength=8.0,
     albedo = colorize(field, stops)
     normal = height_to_normal(field, strength=normal_strength)
 
-    # PNG source files
-    albedo_png = os.path.join(SRC_PARALLAX, f"{name}.png")
-    normal_png = os.path.join(SRC_PARALLAX, f"{name}_nrm.png")
-    save_png(albedo, albedo_png)
-    save_png(normal, normal_png)
+    # Source copies (gitignored terrain_src/ dir — kept for texconv if ever needed)
+    save_png(albedo, os.path.join(SRC_PARALLAX, f"{name}.png"))
+    save_png(normal, os.path.join(SRC_PARALLAX, f"{name}_nrm.png"))
 
-    # DDS files written directly (BC1 — good enough for terrain tiles)
-    albedo_dds = os.path.join(DST_PARALLAX, f"{name}.dds")
-    normal_dds = os.path.join(DST_PARALLAX, f"{name}_nrm.dds")
-    save_dds(albedo, albedo_dds, label="albedo")
-    save_dds(normal, normal_dds, label="normal")
+    # GameData PNGs — committed to git, loaded by Parallax at runtime
+    save_png(albedo, os.path.join(DST_PARALLAX, f"{name}.png"),     label="albedo")
+    save_png(normal, os.path.join(DST_PARALLAX, f"{name}_nrm.png"), label="normal")
 
 
 # ─── Cloud texture builder ─────────────────────────────────────────────────────
