@@ -266,23 +266,89 @@ def make_terrain_texture(name, seed, size, stops, normal_strength=8.0,
 
 # ─── Cloud texture builder ─────────────────────────────────────────────────────
 
-def make_cloud_texture(name, seed, size, stops=None, octaves=6, roughness=0.62,
-                       is_greyscale=False):
+def make_cloud_texture(name, seed, size, texture_type="generic",
+                       octaves=6, roughness=0.62):
     """
-    Generate a cloud/smog texture for EVE.
-    Greyscale: white=opaque, black=transparent. EVE _Color tints the result.
+    Generate a purpose-built cloud/smog texture for EVE.
+    Greyscale PNG: white=opaque, black=transparent. EVE _Color tints the result.
+
+    texture_type options:
+      "dense"      — large-scale cloud masses, ~65% coverage, sharp edges
+      "medium"     — medium coverage ~45%, more gaps visible
+      "thin"       — horizontal banding pattern, good for gas-giant main tex
+      "detail"     — fine swirling cloud cells for close-up detail tile
+      "smog"       — near-opaque uniform smog deck, 70-100% coverage
+      "smog_detail"— turbulence swirl for smog close-up
+      "generic"    — raw fbm with supplied octaves/roughness (legacy fallback)
     """
-    field = fbm(size, seed, octaves=octaves, roughness=roughness)
+    if texture_type == "dense":
+        # BIG cloud masses: low-octave fbm gives features 1/4–1/8 of image size
+        large = fbm(size, seed,      octaves=3, roughness=0.72)
+        mid   = fbm(size, seed + 50, octaves=6, roughness=0.65)
+        field = large * 0.70 + mid * 0.30
+        lo, hi = field.min(), field.max()
+        field = (field - lo) / (hi - lo)
+        # tanh sharpening: push toward 0/1, threshold 0.48 → ~65% coverage
+        field = 0.5 + 0.5 * np.tanh((field - 0.48) * 5.0)
 
-    if is_greyscale:
-        arr = (field * 255).astype(np.uint8)
-        rgb = np.stack([arr, arr, arr], axis=2)
-    else:
-        rgb = colorize(field, stops)
+    elif texture_type == "medium":
+        large = fbm(size, seed,      octaves=3, roughness=0.65)
+        mid   = fbm(size, seed + 50, octaves=6, roughness=0.60)
+        field = large * 0.65 + mid * 0.35
+        lo, hi = field.min(), field.max()
+        field = (field - lo) / (hi - lo)
+        # threshold 0.52 → ~45% coverage
+        field = 0.5 + 0.5 * np.tanh((field - 0.52) * 4.0)
 
-    png_path = os.path.join(SRC_EVE, f"{name}.png")
-    dds_path = os.path.join(DST_EVE,  f"{name}.dds")
-    save_png(rgb, png_path)
+    elif texture_type == "thin":
+        # Horizontal gas-giant banding warped by turbulence
+        field = fbm(size, seed, octaves=5, roughness=0.50)
+        lo, hi = field.min(), field.max()
+        field = (field - lo) / (hi - lo)
+        # Strong contrast: distinct bright zones and dark belts
+        field = 0.5 + 0.5 * np.tanh((field - 0.5) * 5.0)
+
+    elif texture_type == "detail":
+        # Fine swirling cloud cells — tiled many times, adds close-up detail
+        field = fbm(size, seed, octaves=9, roughness=0.72)
+        lo, hi = field.min(), field.max()
+        field = (field - lo) / (hi - lo)
+        # Moderate sharpening — want visible swirls without pure black/white
+        field = 0.5 + 0.5 * np.tanh((field - 0.5) * 2.5)
+
+    elif texture_type == "smog":
+        # Near-opaque smog deck: always 68–100% opaque, gentle variation
+        base = fbm(size, seed, octaves=4, roughness=0.55)
+        lo, hi = base.min(), base.max()
+        base = (base - lo) / (hi - lo)
+        field = 0.68 + base * 0.32  # clamp to [0.68, 1.0]
+
+    elif texture_type == "smog_detail":
+        # Fine turbulence swirl for smog close-up
+        field = fbm(size, seed, octaves=8, roughness=0.70)
+        lo, hi = field.min(), field.max()
+        field = (field - lo) / (hi - lo)
+        field = 0.5 + 0.5 * np.tanh((field - 0.5) * 2.0)
+
+    else:  # generic / legacy fallback
+        field = fbm(size, seed, octaves=octaves, roughness=roughness)
+        lo, hi = field.min(), field.max()
+        field = (field - lo) / (hi - lo)
+
+    field = np.clip(field, 0.0, 1.0)
+    arr   = (field * 255).astype(np.uint8)
+    rgb   = np.stack([arr, arr, arr], axis=2)
+
+    # Source PNG (gitignored terrain_src/ dir)
+    png_src = os.path.join(SRC_EVE, f"{name}.png")
+    save_png(rgb, png_src)
+
+    # GameData PNG — committed to git (DDS is gitignored)
+    png_dst = os.path.join(DST_EVE, f"{name}.png")
+    save_png(rgb, png_dst)
+
+    # DDS for local testing (gitignored)
+    dds_path = os.path.join(DST_EVE, f"{name}.dds")
     save_dds(rgb, dds_path, label=name)
 
 
@@ -520,32 +586,33 @@ TERRAIN_TEXTURES = [
 
 
 # ─── EVE cloud texture definitions ───────────────────────────────────────────
+#
+# texture_type controls the generator used — see make_cloud_texture docstring.
+# seed must be unique per texture.
+# ─────────────────────────────────────────────────────────────────────────────
 
 EVE_TEXTURES = [
 
-    # dense cumulus/cumulonimbus — for TauCetiC, EridianHome main deck
-    dict(name="cloud_dense",  seed=200, octaves=7, roughness=0.65,
-         is_greyscale=True),
+    # Large-scale cloud masses — main layer for TauCetiC, also smog-world decks.
+    # Produces big white cloud regions and clear dark holes (≈65% coverage).
+    dict(name="cloud_dense",  seed=200, texture_type="dense"),
 
-    # moderate cloud cover — for TauCetiE main Astrophage layer
-    dict(name="cloud_medium", seed=201, octaves=6, roughness=0.60,
-         is_greyscale=True),
+    # Medium cloud coverage (~45%) — for secondary cloud layers.
+    dict(name="cloud_medium", seed=210, texture_type="medium"),
 
-    # wispy cirrus — for TauCetiF, upper layers
-    dict(name="cloud_thin",   seed=202, octaves=5, roughness=0.50,
-         is_greyscale=True),
+    # Horizontal gas-giant banding — primary MainTex for TauCetiE, EridianHome.
+    # Wraps around sphere as alternating dark belts and bright zones.
+    dict(name="cloud_thin",   seed=202, texture_type="thin"),
 
-    # tiling cloud cell detail texture (high frequency)
-    dict(name="cloud_detail", seed=203, octaves=9, roughness=0.72,
-         is_greyscale=True),
+    # Fine swirling cloud cells — always used as DetailTex (tiled 12–16×).
+    # Provides close-up cloud detail when approaching from orbit.
+    dict(name="cloud_detail", seed=203, texture_type="detail"),
 
-    # uniform smog / haze — for EridianHome, TauCetiD
-    dict(name="smog_dense",   seed=204, octaves=6, roughness=0.55,
-         is_greyscale=True),
+    # Near-opaque smog — EridianHome main deck, 70–100% coverage, smooth.
+    dict(name="smog_dense",   seed=204, texture_type="smog"),
 
-    # smog turbulence detail
-    dict(name="smog_detail",  seed=205, octaves=8, roughness=0.68,
-         is_greyscale=True),
+    # Fine smog turbulence — DetailTex for smog-world layers.
+    dict(name="smog_detail",  seed=205, texture_type="smog_detail"),
 ]
 
 
@@ -581,12 +648,12 @@ def main():
     for i, spec in enumerate(EVE_TEXTURES, 1):
         name  = spec["name"]
         seed  = spec["seed"]
+        ttype = spec.get("texture_type", "generic")
         oct   = spec.get("octaves", 6)
         rough = spec.get("roughness", 0.62)
-        grey  = spec.get("is_greyscale", True)
-        print(f"  [{i:02d}/{len(EVE_TEXTURES):02d}] {name}")
+        print(f"  [{i:02d}/{len(EVE_TEXTURES):02d}] {name}  [{ttype}]")
         make_cloud_texture(name, seed, CLOUD_SIZE,
-                           octaves=oct, roughness=rough, is_greyscale=grey)
+                           texture_type=ttype, octaves=oct, roughness=rough)
 
     # ── Summary ───────────────────────────────────────────────────────────────
     n_terrain = len(TERRAIN_TEXTURES)

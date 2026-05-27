@@ -11,3 +11,6 @@ Tools/terrain_src/
 
 # KSP cache
 GameData/Kopernicus/Cache/
+
+# C# build artifacts — obj/ folder is MSBuild intermediate output, never commit
+GameData/ProjectHailMary/Plugins/Source/obj/
