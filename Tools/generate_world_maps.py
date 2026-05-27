@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Project Hail Mary - Planet World Map Generator  v2
+Project Hail Mary - Planet World Map Generator  v3
 Generates equirectangular color/height/normal PNGs for all mod planets.
 Also generates EVE cloud-map PNGs (grayscale, white=cloud, black=clear).
 
-Two generation modes:
-  GAS WORLD  — latitude-banded atmosphere with turbulent edges + cyclone swirls.
-               Looks like Jool/Jupiter. Used for thick-atmosphere planets.
-  ROCKY WORLD — FBM terrain with craters/erosion. Used for airless/thin-atm worlds.
+Generation modes:
+  ASTROPHAGE WORLD — Voronoi biological-channel networks + crater rings +
+                     gas-world density variation. Used for Adrian (TauCetiE).
+                     Visual target: Eeloo-quality depth, lime-green biosphere.
+  GAS WORLD        — latitude-banded atmosphere with turbulent edges + cyclones.
+  ROCKY WORLD      — FBM terrain with craters/erosion.
 
 Requirements:  pip install Pillow numpy
 Run from repo root:  python Tools/generate_world_maps.py
@@ -62,60 +64,52 @@ def fbm_horizontal(width, height, seed, h_stretch=6.0, octaves=6, roughness=0.55
 
 # ── Gas giant band field ──────────────────────────────────────────────────────
 
-def gas_band_field(width, height, seed, band_count=8,
-                   warp_y=0.12, warp_x=0.02):
+def gas_band_field(width, height, seed, band_count=8, warp_y=0.12, warp_x=0.02,
+                   sub_weight=0.12, cell_weight=0.10):
     """
     Core gas-giant atmosphere field.
     Returns float [0,1] — low = dark belt, high = bright zone.
 
-    Key design: use a single primary sine (no harmonic averaging that kills contrast)
-    with cells at only 10% so the bold dark/bright alternation survives.
-    Caller applies tanh contrast sharpening AFTER swirls.
+    sub_weight:  fine sub-band sine detail along belt edges (0 = clean belts)
+    cell_weight: FBM cloud-cell texture (0 = smooth)
     """
     np.random.seed(seed)
 
-    # Latitude (0=north pole, 1=south pole)
     lat = np.linspace(0.0, 1.0, height)[:, np.newaxis]
-    lat = np.tile(lat, (1, width))          # (H, W)
+    lat = np.tile(lat, (1, width))
 
-    # Turbulent latitude warp — makes band boundaries wavy but not unrecognisable
     w1 = fbm_horizontal(width, height, seed + 1, h_stretch=8.0,  octaves=6, roughness=0.52)
     w2 = fbm_horizontal(width, height, seed + 2, h_stretch=16.0, octaves=3, roughness=0.44)
     lat_warp = w1 * 0.70 + w2 * 0.30
 
-    # Longitudinal drift (jet-stream shear)
     lon_drift = fbm_horizontal(width, height, seed + 3, h_stretch=22.0, octaves=3, roughness=0.38)
 
-    lat_w = np.clip(lat + (lat_warp  - 0.5) * warp_y * 2.0
-                       + (lon_drift  - 0.5) * warp_x, 0.0, 1.0)
+    lat_w = np.clip(lat + (lat_warp - 0.5) * warp_y * 2.0
+                        + (lon_drift - 0.5) * warp_x, 0.0, 1.0)
 
-    # PRIMARY bands — single sine only.  Harmonics average out and kill contrast.
+    primary_w = 1.0 - sub_weight - cell_weight
     primary = 0.5 + 0.5 * np.sin(lat_w * np.pi * band_count * 2.0)
+    result  = primary * primary_w
 
-    # Sub-band detail at 2× frequency (fine structure within each band)
-    sub = 0.5 + 0.5 * np.sin(lat_w * np.pi * band_count * 4.1 + 0.6)
+    if sub_weight > 0:
+        sub = 0.5 + 0.5 * np.sin(lat_w * np.pi * band_count * 4.1 + 0.6)
+        result += sub * sub_weight
 
-    # Cloud-cell texture — horizontally stretched, very low weight
-    cells = fbm_horizontal(width, height, seed + 4, h_stretch=3.5,
-                            octaves=7, roughness=0.60)
+    if cell_weight > 0:
+        cells = fbm_horizontal(width, height, seed + 4, h_stretch=3.5, octaves=7, roughness=0.60)
+        result += cells * cell_weight
 
-    # Bands dominate: primary 78%, sub 12%, cells 10%
-    result = primary * 0.78 + sub * 0.12 + cells * 0.10
     lo, hi = result.min(), result.max()
     return (result - lo) / (hi - lo) if hi > lo else result
 
 
 def add_swirl(field, cx, cy, radius, strength):
-    """
-    Add a cyclone / anticyclone swirl at position (cx,cy) [0-1 normalised].
-    strength > 0 = counterclockwise (anticyclone in NH), < 0 = clockwise.
-    """
+    """Add a cyclone/anticyclone swirl at (cx,cy) [0-1 normalised]."""
     H, W = field.shape
-    xs = np.linspace(0, 1, W)[np.newaxis, :] - cx   # (1, W)
-    ys = np.linspace(0, 1, H)[:, np.newaxis] - cy   # (H, 1)
+    xs = np.linspace(0, 1, W)[np.newaxis, :] - cx
+    ys = np.linspace(0, 1, H)[:, np.newaxis] - cy
     dist = np.sqrt(xs ** 2 + ys ** 2)
 
-    # Gaussian rotation — strongest at centre, falls off with distance
     angle = strength * np.exp(-dist ** 2 / (2.0 * (radius * 0.35) ** 2))
 
     cos_a = np.cos(angle);  sin_a = np.sin(angle)
@@ -127,18 +121,92 @@ def add_swirl(field, cx, cy, radius, strength):
     return field[sy, sx]
 
 
+# ── Fracture & crater helpers (for Astrophage world) ─────────────────────────
+
+def voronoi_edges(width, height, seed, n_points=75):
+    """
+    Voronoi cell-edge distance field — generates biological crack/channel networks.
+
+    Returns [0,1] where 0 = along a fracture boundary, 1 = deep in cell interior.
+    Edges wrap in X (longitude) for a seamless equirectangular map.
+    """
+    np.random.seed(seed)
+    pts_x = np.random.rand(n_points) * width
+    pts_y = np.random.rand(n_points) * height
+
+    ys, xs = np.mgrid[0:height, 0:width]
+    dist1 = np.full((height, width), np.inf)
+    dist2 = np.full((height, width), np.inf)
+
+    for i in range(n_points):
+        # Toroidal distance in X — seamless longitude wrap
+        dx = np.abs(xs - pts_x[i])
+        dx = np.minimum(dx, width - dx)
+        d  = np.sqrt(dx * dx + (ys - pts_y[i]) ** 2)
+
+        closer = d < dist1
+        dist2  = np.where(closer, dist1, np.minimum(dist2, d))
+        dist1  = np.where(closer, d,     dist1)
+
+    # Edge proximity = dist2 - dist1:  0 at exact boundary, grows toward interior
+    edge = dist2 - dist1
+    lo, hi = edge.min(), edge.max()
+    return (edge - lo) / (hi - lo + 1e-8)
+
+
+def add_craters(width, height, seed, n_craters=45,
+                max_radius_frac=0.035, min_radius_frac=0.005):
+    """
+    Stamp circular impact craters into a height field.
+
+    Returns [0,1] with:
+      - concave floor inside crater
+      - raised Gaussian rim ring at crater edge
+      - smooth decay outside the rim
+    """
+    np.random.seed(seed)
+    field = np.zeros((height, width), dtype=np.float64)
+
+    ys_norm = np.linspace(0, 1, height)[:, np.newaxis]
+    xs_norm = np.linspace(0, 1, width)[np.newaxis, :]
+
+    for _ in range(n_craters):
+        cx    = np.random.rand()
+        cy    = np.random.rand()
+        r     = np.random.uniform(min_radius_frac, max_radius_frac)
+        depth = np.random.uniform(0.3, 1.0)
+
+        dx   = np.abs(xs_norm - cx)
+        dx   = np.minimum(dx, 1.0 - dx)          # wrap in X
+        dist = np.sqrt(dx ** 2 + (ys_norm - cy) ** 2)
+
+        # Concave floor (parabolic inside r*0.75)
+        floor = np.where(dist < r * 0.75,
+                         -depth * (1.0 - (dist / (r * 0.75)) ** 2) * 0.5,
+                         0.0)
+
+        # Gaussian rim ring centred at r
+        rim = depth * 0.45 * np.exp(-((dist - r) / (r * 0.30)) ** 2)
+
+        field += floor + rim
+
+    lo, hi = field.min(), field.max()
+    return (field - lo) / (hi - lo + 1e-8)
+
+
 # ── Rocky terrain helpers ─────────────────────────────────────────────────────
 
 def warp(terrain, warp_seed, strength=0.12):
     """Domain-warp for natural continent shapes."""
-    dx = fbm(WIDTH, HEIGHT, warp_seed,     octaves=4, roughness=0.6)
-    dy = fbm(WIDTH, HEIGHT, warp_seed + 1, octaves=4, roughness=0.6)
-    base_xs = np.tile(np.arange(WIDTH) [np.newaxis, :], (HEIGHT, 1))
-    base_ys = np.tile(np.arange(HEIGHT)[:, np.newaxis], (1,  WIDTH))
-    xs = np.clip(np.round(base_xs + (dx - 0.5) * strength * WIDTH ).astype(int),
-                 0, WIDTH  - 1)
-    ys = np.clip(np.round(base_ys + (dy - 0.5) * strength * HEIGHT).astype(int),
-                 0, HEIGHT - 1)
+    height, width = terrain.shape
+    dx = fbm(width, height, warp_seed,     octaves=4, roughness=0.6)
+    dy = fbm(width, height, warp_seed + 1, octaves=4, roughness=0.6)
+    base_xs = np.tile(np.arange(width) [np.newaxis, :], (height, 1))
+    base_ys = np.tile(np.arange(height)[:, np.newaxis], (1,  width))
+    xs = np.clip(np.round(base_xs + (dx - 0.5) * strength * width ).astype(int),
+                 0, width  - 1)
+    ys = np.clip(np.round(base_ys + (dy - 0.5) * strength * height).astype(int),
+                 0, height - 1)
     return terrain[ys, xs]
 
 
@@ -172,7 +240,8 @@ def height_to_normal(terrain, strength=4.0):
 
 def add_clouds(color, cloud_seed, coverage=0.35, cloud_rgb=(242, 248, 255),
                octaves=5, roughness=0.62, blur=3):
-    clouds = fbm(WIDTH, HEIGHT, cloud_seed, octaves=octaves, roughness=roughness)
+    height, width = color.shape[:2]
+    clouds = fbm(width, height, cloud_seed, octaves=octaves, roughness=roughness)
     threshold = 1.0 - coverage
     mask = np.clip((clouds - threshold) / max(1.0 - threshold, 1e-9), 0, 1)
     mask_img = Image.fromarray((mask * 255).astype(np.uint8)).filter(
@@ -184,7 +253,8 @@ def add_clouds(color, cloud_seed, coverage=0.35, cloud_rgb=(242, 248, 255),
 
 def add_polar_ice(color, cap_lat=0.82, blend_width=0.06,
                   ice_rgb=(235, 242, 252)):
-    ys = np.linspace(0, 1, HEIGHT)
+    height = color.shape[0]
+    ys = np.linspace(0, 1, height)
     dist = np.minimum(ys, 1.0 - ys) * 2
     mask = np.clip((cap_lat - dist) / blend_width, 0, 1)[:, np.newaxis, np.newaxis]
     blended = color.astype(np.float64) * (1 - mask) + np.array(ice_rgb) * mask
@@ -192,31 +262,17 @@ def add_polar_ice(color, cap_lat=0.82, blend_width=0.06,
 
 
 def add_polar_fade(color, fade_frac=0.18, pole_color=None):
-    """
-    Fade horizontal band texture to a solid colour near the poles.
-    Prevents the ugly 'scrunching' that happens when bands converge at the
-    top/bottom of a sphere.  fade_frac = fraction of image height over which
-    the fade occurs (e.g. 0.18 = top/bottom 18% fades to solid).
-    pole_color defaults to the average colour of the equatorial strip.
-    """
-    H, W = color.shape[:2]
+    """Fade band texture to a solid colour near the poles to avoid sphere-pinching."""
+    H = color.shape[0]
     if pole_color is None:
-        # Sample the mid-latitude strip to get a representative zone colour
-        mid_s = int(H * 0.38)
-        mid_e = int(H * 0.62)
+        mid_s = int(H * 0.38);  mid_e = int(H * 0.62)
         pole_color = color[mid_s:mid_e].mean(axis=(0, 1))
-
     pole_color = np.array(pole_color, dtype=np.float64)
-
-    # Distance from nearest pole: 0 at pole, 1 at equator
     ys    = np.linspace(0.0, 1.0, H)
-    pdist = np.minimum(ys, 1.0 - ys) * 2.0          # 0 at poles, 1 at equator
-
-    # Smooth S-curve mask (squared cosine feel)
-    raw  = np.clip(pdist / fade_frac, 0.0, 1.0)
-    mask = raw * raw * (3.0 - 2.0 * raw)             # smoothstep
-    mask = mask[:, np.newaxis, np.newaxis]            # (H,1,1)
-
+    pdist = np.minimum(ys, 1.0 - ys) * 2.0
+    raw   = np.clip(pdist / fade_frac, 0.0, 1.0)
+    mask  = raw * raw * (3.0 - 2.0 * raw)
+    mask  = mask[:, np.newaxis, np.newaxis]
     blended = color.astype(np.float64) * mask + pole_color * (1.0 - mask)
     return np.clip(blended, 0, 255).astype(np.uint8)
 
@@ -233,65 +289,163 @@ def save_png(arr, rel_path):
 
 # ── Planet generators ─────────────────────────────────────────────────────────
 
+def generate_astrophage_world(name, seed):
+    """
+    Astrophage biosphere world — Adrian (TauCetiE).
+
+    Visual style inspired by Eeloo: Voronoi biological-channel networks give
+    branching dark fractures; crater rings create raised rims; combined height
+    drives a strong (5.5x) normal map for genuine 3-D depth at orbital view.
+
+    Height composition:
+      45% large-scale bio-density (gas-world bands + cyclone swirls)
+      35% crater field (45 impacts, parabolic floor + Gaussian rim)
+      20% micro-roughness FBM
+    Cracks further depress height along fracture lines.
+    """
+    W, H = WIDTH, HEIGHT
+    print(f"  {name}  [astrophage world — Eeloo-style depth] ...", flush=True)
+
+    # ── 1. Large-scale biological density (latitude-banded like a gas world) ──
+    # 4 bands → broad, smooth Astrophage density zones (not tight stripes)
+    bio = gas_band_field(W, H, seed, band_count=4, warp_y=0.10, warp_x=0.025)
+    for (cx, cy, r, s) in [
+        (0.30, 0.55, 0.10, +2.0),   # Great Astrophage Vortex (anticyclone)
+        (0.68, 0.43, 0.07, -1.5),   # southern cyclone
+        (0.14, 0.60, 0.06, +1.6),   # northern swirl
+        (0.80, 0.38, 0.05, -1.1),   # small southern eddy
+    ]:
+        bio = add_swirl(bio, cx, cy, r, s)
+    lo, hi = bio.min(), bio.max()
+    bio = (bio - lo) / (hi - lo)
+    # Very gentle contrast — smooth terrain-like biological density, not Jool bands
+    bio = 0.5 + 0.5 * np.tanh((bio - 0.5) * 2.0)
+
+    # ── 2. Voronoi biological channel / fracture network ──────────────────────
+    # 22 points → sparse cracks like Eeloo (a few long branching fractures)
+    frac = voronoi_edges(W, H, seed + 100, n_points=22)
+    # crack_mask: 0 = at fracture centreline, 1 = cell interior
+    # threshold 0.07 → thin lines (roughly 7% of the normalised range)
+    crack_mask = np.clip(frac / 0.07, 0, 1) ** 2.0
+
+    # Domain-warp the cracks lightly for an organic, non-geometric look
+    wdx = fbm(W, H, seed + 150, octaves=4, roughness=0.60) - 0.5
+    wdy = fbm(W, H, seed + 151, octaves=4, roughness=0.60) - 0.5
+    row_idx = np.tile(np.arange(H)[:, np.newaxis], (1, W))
+    col_idx = np.tile(np.arange(W)[np.newaxis, :], (H, 1))
+    row_w = np.clip((row_idx + wdy * H * 0.025).astype(np.int32), 0, H - 1)
+    col_w = np.clip((col_idx + wdx * W * 0.025).astype(np.int32), 0, W - 1)
+    crack_mask = crack_mask[row_w, col_w]
+
+    # ── 3. Crater height field ────────────────────────────────────────────────
+    crater_h = add_craters(W, H, seed + 200, n_craters=40, max_radius_frac=0.040)
+
+    # ── 4. Micro-roughness (Astrophage mat surface texture) ───────────────────
+    micro = fbm(W, H, seed + 300, octaves=8, roughness=0.68)
+
+    # ── 5. Composite height map ───────────────────────────────────────────────
+    hfield = bio * 0.45 + crater_h * 0.35 + micro * 0.20
+    # Biological channels sit lower in the topography
+    hfield = hfield * (0.70 + crack_mask * 0.30)
+    lo, hi = hfield.min(), hfield.max()
+    hfield = (hfield - lo) / (hi - lo)
+
+    # ── 6. Color map ──────────────────────────────────────────────────────────
+    ADRIAN_COLORS = [
+        (0.00, (  3,  16,   1)),   # near-black — deepest biological channels
+        (0.12, (  8,  36,   4)),   # very dark green
+        (0.25, ( 20,  78,  12)),   # dark forest green
+        (0.40, ( 48, 148,  22)),   # medium-dark green
+        (0.55, ( 88, 210,  35)),   # vivid mid green
+        (0.70, (128, 245,  46)),   # bright lime
+        (0.85, (148, 255,  52)),   # intense lime
+        (1.00, (158, 255,  54)),   # peak lime — storm crests / Astrophage peak density
+    ]
+    color = apply_colormap(bio, ADRIAN_COLORS).astype(np.float64)
+
+    # Darken crack/channel lines to near-black (biological channel valleys)
+    crack_inf  = (1.0 - crack_mask)[..., np.newaxis]
+    dark_ch    = np.array([4, 18, 2], dtype=np.float64)
+    color      = color * (1.0 - crack_inf * 0.75) + dark_ch * crack_inf * 0.75
+
+    # Slightly brighten crater rims — raised terrain hosts richer Astrophage growth
+    rim_inf    = crater_h[..., np.newaxis]
+    bright_rim = np.array([152, 255, 54], dtype=np.float64)
+    color      = color * (1.0 - rim_inf * 0.10) + bright_rim * rim_inf * 0.10
+
+    color = np.clip(color, 0, 255).astype(np.uint8)
+
+    # Polar fade: Astrophage thins toward poles → dark forest green at caps
+    color = add_polar_fade(color, fade_frac=0.20, pole_color=(12, 52, 6))
+
+    # ── 7. Save ───────────────────────────────────────────────────────────────
+    save_png(color,                                   f"{name}_color.png")
+    save_png((hfield * 255).astype(np.uint8),         f"{name}_height.png")
+    save_png(height_to_normal(hfield, strength=5.5),  f"{name}_normal.png")
+
+
 def generate_gas_world(name, seed, band_count, band_colors, cell_colors=None,
                         warp_y=0.16, warp_x=0.04, swirls=None,
-                        normal_strength=1.2):
+                        normal_strength=1.2, contrast_k=4.0,
+                        sub_weight=0.12, cell_weight=0.10):
     """
     Gas / thick-atmosphere world.
-    Produces horizontal cloud bands with turbulent edges, swirl features,
-    and cloud-cell detail — like Jool/Jupiter but coloured for the planet.
+
+    contrast_k:  tanh sharpness — 4.0 standard, 5.0 crisp Jool-quality.
+    sub_weight:  fine sub-band teeth detail (set 0 for clean band edges).
+    cell_weight: FBM cloud-cell noise (set 0 for clean bands).
+    The band field is used for the normal map so sun-lighting tracks the cloud bands.
     """
     print(f"  {name}  [gas world] ...", flush=True)
 
-    # Primary band field
     field = gas_band_field(WIDTH, HEIGHT, seed,
-                            band_count=band_count,
-                            warp_y=warp_y, warp_x=warp_x)
+                            band_count=band_count, warp_y=warp_y, warp_x=warp_x,
+                            sub_weight=sub_weight, cell_weight=cell_weight)
 
-    # Cyclone / anticyclone swirl features
     if swirls:
         for (cx, cy, radius, strength) in swirls:
             field = add_swirl(field, cx, cy, radius, strength)
 
-    # Renormalise after swirls
     lo, hi = field.min(), field.max()
     field = (field - lo) / (hi - lo) if hi > lo else field
 
-    # Contrast sharpening — push pixels toward dark or bright extremes.
-    # tanh with k=4 creates nearly-bimodal distribution: dark belts stay dark,
-    # bright zones stay bright, transitions are sharp (Jool-style crisp edges).
-    field = 0.5 + 0.5 * np.tanh((field - 0.5) * 4.0)
+    # Pre-blur before tanh: kills high-frequency warp noise so belt edges look
+    # like rolling cloud layers, not teeth.  Large radius (14) smooths the
+    # variation while keeping the overall band structure intact; tanh then
+    # adds the high-contrast belt/zone snap back.
+    field_img = Image.fromarray((field * 255).astype(np.uint8))
+    field_img = field_img.filter(ImageFilter.GaussianBlur(radius=14))
+    field = np.array(field_img, dtype=np.float64) / 255.0
+    lo, hi = field.min(), field.max()
+    field = (field - lo) / (hi - lo) if hi > lo else field
 
-    # Apply band colormap
+    # tanh contrast: pushes pixels toward belt-dark or zone-bright extremes
+    field = 0.5 + 0.5 * np.tanh((field - 0.5) * contrast_k)
+
     color = apply_colormap(field, band_colors)
 
-    # Cloud-cell highlight overlay (bright patches within bands)
     if cell_colors:
+        # Cloud-cell detail overlay — fine bright/dark patches within each band
         cells = fbm_horizontal(WIDTH, HEIGHT, seed + 10,
-                                h_stretch=3.0, octaves=8, roughness=0.62)
-        hi_mask = np.clip((cells - 0.55) / 0.30, 0, 1)
-        hi_img = Image.fromarray((hi_mask * 255).astype(np.uint8)).filter(
+                                h_stretch=3.5, octaves=8, roughness=0.62)
+        hi_mask = np.clip((cells - 0.48) / 0.36, 0, 1)
+        hi_img  = Image.fromarray((hi_mask * 255).astype(np.uint8)).filter(
             ImageFilter.GaussianBlur(radius=2))
-        hi_mask = np.array(hi_img, dtype=np.float64)[..., np.newaxis] / 255.0
+        hi_mask  = np.array(hi_img, dtype=np.float64)[..., np.newaxis] / 255.0
         cell_rgb = apply_colormap(cells, cell_colors).astype(np.float64)
         color = np.clip(
-            color.astype(np.float64) * (1 - hi_mask * 0.45)
-            + cell_rgb * hi_mask * 0.45,
+            color.astype(np.float64) * (1 - hi_mask * 0.50)
+            + cell_rgb * hi_mask * 0.50,
             0, 255
         ).astype(np.uint8)
 
-    # Fade bands to a solid colour near the poles to prevent sphere-pinching.
-    # Use the bright zone colour (last stop in band_colors) as the pole colour
-    # so the caps look like zone cloud-tops rather than a blended smear.
     pole_rgb = band_colors[-1][1]
     color = add_polar_fade(color, fade_frac=0.18, pole_color=pole_rgb)
 
-    # Height map: simple FBM (surface invisible, but MapSODemand needs a file)
-    hfield = fbm(WIDTH, HEIGHT, seed + 20, octaves=5, roughness=0.50)
-
-    save_png(color,                               f"{name}_color.png")
-    save_png((hfield * 255).astype(np.uint8),     f"{name}_height.png")
-    save_png(height_to_normal(field, normal_strength), f"{name}_normal.png")
+    # Height map: use band field for realistic depth → normal map lights up the bands
+    save_png(color,                                    f"{name}_color.png")
+    save_png((field * 255).astype(np.uint8),           f"{name}_height.png")
+    save_png(height_to_normal(field, normal_strength),  f"{name}_normal.png")
 
 
 def generate_rocky_world(name, terrain_seed, cloud_seed, color_stops,
@@ -314,8 +468,8 @@ def generate_rocky_world(name, terrain_seed, cloud_seed, color_stops,
                            cloud_rgb=cloud_color, octaves=cloud_octaves,
                            roughness=cloud_roughness, blur=cloud_blur)
 
-    save_png(color,                                   f"{name}_color.png")
-    save_png((terrain * 255).astype(np.uint8),        f"{name}_height.png")
+    save_png(color,                                    f"{name}_color.png")
+    save_png((terrain * 255).astype(np.uint8),         f"{name}_height.png")
     save_png(height_to_normal(terrain, normal_strength), f"{name}_normal.png")
 
 
@@ -325,20 +479,18 @@ def generate_eve_cloud_textures():
     """
     Generate grayscale cloud-map PNGs for EVE.
     white = opaque cloud,  black = clear sky (transparent).
-    Each texture covers the full equirectangular sphere.
     """
     print("\n  EVE cloud textures ...", flush=True)
 
-    # --- cloud_dense: thick gas-world cloud banding (like Jool's cloud deck)
+    # cloud_dense: thick banded cloud deck
     field = gas_band_field(WIDTH, HEIGHT, seed=500, band_count=9,
                             warp_y=0.18, warp_x=0.05)
-    # Push toward high coverage: threshold + stretch
     cloud_mask = np.clip((field - 0.18) / 0.62, 0, 1)
     cloud_blur = Image.fromarray((cloud_mask * 255).astype(np.uint8)).filter(
         ImageFilter.GaussianBlur(radius=3))
     save_png(np.array(cloud_blur), "EVE/cloud_dense.png")
 
-    # --- cloud_medium: similar but lower coverage
+    # cloud_medium
     field2 = gas_band_field(WIDTH, HEIGHT, seed=501, band_count=7,
                              warp_y=0.14, warp_x=0.04)
     cloud_mask2 = np.clip((field2 - 0.30) / 0.55, 0, 1)
@@ -346,7 +498,7 @@ def generate_eve_cloud_textures():
         ImageFilter.GaussianBlur(radius=2))
     save_png(np.array(cloud_blur2), "EVE/cloud_medium.png")
 
-    # --- cloud_thin: sparse wispy bands (like Jool's thin cloud wisps)
+    # cloud_thin: sparse wisps
     field3 = gas_band_field(WIDTH, HEIGHT, seed=502, band_count=5,
                              warp_y=0.10, warp_x=0.03)
     cloud_mask3 = np.clip((field3 - 0.48) / 0.42, 0, 1)
@@ -354,26 +506,24 @@ def generate_eve_cloud_textures():
         ImageFilter.GaussianBlur(radius=2))
     save_png(np.array(cloud_blur3), "EVE/cloud_thin.png")
 
-    # --- cloud_detail: small-scale tiling cloud cell texture
-    #     High frequency FBM — tiled many times by EVE (uScale = 10+)
+    # cloud_detail: high-frequency tiling cell texture
     detail = fbm_horizontal(512, 256, seed=503, h_stretch=2.5,
                              octaves=8, roughness=0.62)
     detail_img = Image.fromarray((detail * 255).astype(np.uint8)).resize(
         (WIDTH, HEIGHT), Image.BILINEAR)
-    # Sharpen contrast for crisp tiling detail
-    detail_sharp = np.clip((np.array(detail_img, dtype=np.float64) / 255.0 - 0.3) / 0.55,
-                            0, 1)
+    detail_sharp = np.clip(
+        (np.array(detail_img, dtype=np.float64) / 255.0 - 0.3) / 0.55, 0, 1)
     save_png((detail_sharp * 255).astype(np.uint8), "EVE/cloud_detail.png")
 
-    # --- smog_dense: near-uniform smog/haze (very high coverage, low contrast)
+    # smog_dense: near-uniform haze (68-100% coverage)
     smog = fbm_horizontal(WIDTH, HEIGHT, seed=504, h_stretch=10.0,
                            octaves=5, roughness=0.48)
-    smog_mask = np.clip((smog - 0.05) / 0.55, 0, 1)
-    smog_blur = Image.fromarray((smog_mask * 255).astype(np.uint8)).filter(
+    smog_base = 0.68 + (smog - smog.min()) / (smog.max() - smog.min() + 1e-8) * 0.32
+    smog_blur = Image.fromarray((smog_base * 255).astype(np.uint8)).filter(
         ImageFilter.GaussianBlur(radius=5))
     save_png(np.array(smog_blur), "EVE/smog_dense.png")
 
-    # --- smog_detail: turbulent smog variation for detail tiling
+    # smog_detail: turbulent smog variation
     smog_d = fbm_horizontal(512, 256, seed=505, h_stretch=3.0,
                              octaves=7, roughness=0.58)
     smog_d_img = Image.fromarray((smog_d * 255).astype(np.uint8)).resize(
@@ -388,40 +538,46 @@ def main():
     os.makedirs(EVE_DIR, exist_ok=True)
     print(f"Output -> {os.path.abspath(TEXTURE_DIR)}\n")
 
-    # ── GAS / THICK-ATMOSPHERE WORLDS ─────────────────────────────────────────
+    # ── ASTROPHAGE GAS WORLD ──────────────────────────────────────────────────
 
     # Adrian (TauCetiE) — THE GREEN PLANET
-    # Film: overwhelming lime-green sphere, completely covered in Astrophage.
-    # Target look: Jool but lime-green — bold dark forest belts, vivid lime zones.
-    # With tanh contrast: dark (<0.35) = near-black forest, bright (>0.65) = vivid lime.
+    # Gas-giant style: 4 wide bold belts, vivid lime zones — clean Jool look.
+    # Low band count + low warp keeps bands wide, smooth, and clearly readable.
     generate_gas_world(
         name        = "TauCetiE",
         seed        = 91,
-        band_count  = 8,
-        warp_y      = 0.12,
-        warp_x      = 0.03,
+        band_count  = 6,
+        warp_y      = 0.10,
+        warp_x      = 0.025,
+        sub_weight  = 0.0,
+        cell_weight = 0.06,
         band_colors = [
-            (0.00, (  4,  20,   2)),   # near-black forest belt
-            (0.18, (  7,  35,   4)),   # very dark green
-            (0.35, ( 18,  75,  10)),   # dark-to-mid transition
-            (0.50, ( 55, 160,  22)),   # mid (tanh keeps few pixels here)
-            (0.65, (110, 230,  38)),   # bright lime zone
-            (0.82, (148, 252,  48)),   # vivid lime
-            (1.00, (162, 255,  52)),   # peak lime — zone crests
+            (0.00, ( 38, 100,  16)),   # dark forest belt — clearly green, not black
+            (0.20, ( 50, 128,  22)),   # forest belt body
+            (0.38, ( 76, 175,  30)),   # belt-to-zone transition
+            (0.54, (108, 228,  40)),   # mid transition
+            (0.68, (136, 250,  47)),   # vivid lime zone
+            (0.84, (148, 255,  50)),   # bright lime
+            (1.00, (155, 255,  52)),   # peak
         ],
-        cell_colors = None,
+        cell_colors = [
+            (0.00, ( 30,  90,  14)),
+            (0.50, ( 88, 200,  36)),
+            (1.00, (145, 252,  50)),
+        ],
         swirls = [
-            (0.30, 0.57, 0.09, +2.2),   # large anticyclone (Great Green Spot)
-            (0.65, 0.42, 0.06, -1.5),   # mid cyclone
-            (0.12, 0.62, 0.05, +1.7),   # northern swirl
-            (0.80, 0.35, 0.04, -1.2),   # small southern cyclone
+            (0.28, 0.56, 0.10, +2.5),
+            (0.68, 0.42, 0.07, -1.8),
+            (0.12, 0.62, 0.06, +1.6),
+            (0.82, 0.38, 0.05, -1.2),
         ],
-        normal_strength = 1.0,
+        normal_strength = 2.5,
+        contrast_k      = 2.8,
     )
 
-    # Erid (EridianHome) — Rocky's homeworld
-    # Book: near-lightless, pitch-black volcanic surface under 28 atm ammonia smog.
-    # Target: dark stormy Jupiter — near-black belts, dull amber zones. Dramatic.
+    # ── GAS / THICK-ATMOSPHERE WORLDS ─────────────────────────────────────────
+
+    # Erid (EridianHome) — Rocky's homeworld; near-lightless under 28 atm ammonia smog
     generate_gas_world(
         name        = "EridianHome",
         seed        = 67,
@@ -429,17 +585,16 @@ def main():
         warp_y      = 0.14,
         warp_x      = 0.04,
         band_colors = [
-            (0.00, (  5,   2,   1)),   # near-black volcanic belt
-            (0.18, ( 15,   8,   2)),   # very dark
-            (0.35, ( 40,  22,   6)),   # dark amber transition
-            (0.50, ( 80,  48,  15)),   # mid amber (tanh pushes away from this)
-            (0.65, (130,  80,  28)),   # bright amber zone
-            (0.82, (162, 102,  38)),   # vivid amber
-            (1.00, (178, 115,  44)),   # storm crest amber
+            (0.00, (  5,   2,   1)),
+            (0.18, ( 15,   8,   2)),
+            (0.35, ( 40,  22,   6)),
+            (0.50, ( 80,  48,  15)),
+            (0.65, (130,  80,  28)),
+            (0.82, (162, 102,  38)),
+            (1.00, (178, 115,  44)),
         ],
-        cell_colors = None,
         swirls = [
-            (0.48, 0.50, 0.11, +2.5),  # massive planet-spanning storm
+            (0.48, 0.50, 0.11, +2.5),
             (0.20, 0.58, 0.07, -1.9),
             (0.72, 0.40, 0.06, +1.7),
             (0.35, 0.32, 0.05, -1.3),
@@ -448,7 +603,6 @@ def main():
     )
 
     # Tau Ceti c — Venus analog, 50 atm sulfuric acid clouds
-    # Target: golden-amber gas world — dark caramel belts, bright pale-gold zones.
     generate_gas_world(
         name        = "TauCetiC",
         seed        = 33,
@@ -456,15 +610,14 @@ def main():
         warp_y      = 0.08,
         warp_x      = 0.02,
         band_colors = [
-            (0.00, ( 35,  20,   4)),   # dark caramel belt
-            (0.18, ( 65,  40,  10)),   # dark amber
-            (0.35, (110,  75,  22)),   # mid transition
-            (0.50, (165, 128,  45)),   # mid gold
-            (0.65, (205, 168,  68)),   # bright gold zone
-            (0.82, (228, 195,  82)),   # vivid pale gold
-            (1.00, (245, 215,  95)),   # peak cloud-top gold
+            (0.00, ( 35,  20,   4)),
+            (0.18, ( 65,  40,  10)),
+            (0.35, (110,  75,  22)),
+            (0.50, (165, 128,  45)),
+            (0.65, (205, 168,  68)),
+            (0.82, (228, 195,  82)),
+            (1.00, (245, 215,  95)),
         ],
-        cell_colors = None,
         swirls = [
             (0.40, 0.52, 0.08, +1.5),
             (0.72, 0.45, 0.05, -1.1),
@@ -519,7 +672,6 @@ def main():
         warp_strength = 0.05,
         normal_strength = 5.0,
         has_clouds    = False,
-        polar_ice     = False,
         color_stops   = [
             (0.00, (28, 26, 24)),
             (0.25, (44, 41, 38)),
@@ -596,7 +748,7 @@ def main():
 
     total = 9 * 3 + 6
     print(f"\nDone — {total} PNG files written.")
-    print("Copy GameData/ to KSP install, delete Kopernicus cache, relaunch.")
+    print("Delete GameData/Kopernicus/Cache/*.bin, then relaunch KSP.")
 
 
 if __name__ == "__main__":
