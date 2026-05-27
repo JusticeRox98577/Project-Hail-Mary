@@ -63,11 +63,14 @@ def fbm_horizontal(width, height, seed, h_stretch=6.0, octaves=6, roughness=0.55
 # ── Gas giant band field ──────────────────────────────────────────────────────
 
 def gas_band_field(width, height, seed, band_count=8,
-                   warp_y=0.16, warp_x=0.04):
+                   warp_y=0.12, warp_x=0.02):
     """
     Core gas-giant atmosphere field.
-    Produces horizontal bands with turbulent wavy edges — like Jupiter/Jool.
-    Returns float32 array [0,1] where value drives the band colormap.
+    Returns float [0,1] — low = dark belt, high = bright zone.
+
+    Key design: use a single primary sine (no harmonic averaging that kills contrast)
+    with cells at only 10% so the bold dark/bright alternation survives.
+    Caller applies tanh contrast sharpening AFTER swirls.
     """
     np.random.seed(seed)
 
@@ -75,29 +78,29 @@ def gas_band_field(width, height, seed, band_count=8,
     lat = np.linspace(0.0, 1.0, height)[:, np.newaxis]
     lat = np.tile(lat, (1, width))          # (H, W)
 
-    # Turbulent latitude warp — makes band boundaries wavy
-    w1 = fbm_horizontal(width, height, seed + 1, h_stretch=8.0,  octaves=7, roughness=0.52)
-    w2 = fbm_horizontal(width, height, seed + 2, h_stretch=14.0, octaves=4, roughness=0.44)
+    # Turbulent latitude warp — makes band boundaries wavy but not unrecognisable
+    w1 = fbm_horizontal(width, height, seed + 1, h_stretch=8.0,  octaves=6, roughness=0.52)
+    w2 = fbm_horizontal(width, height, seed + 2, h_stretch=16.0, octaves=3, roughness=0.44)
     lat_warp = w1 * 0.70 + w2 * 0.30
 
-    # Longitudinal drift (jet-stream shear effect)
-    lon_drift = fbm_horizontal(width, height, seed + 3, h_stretch=20.0, octaves=3, roughness=0.40)
+    # Longitudinal drift (jet-stream shear)
+    lon_drift = fbm_horizontal(width, height, seed + 3, h_stretch=22.0, octaves=3, roughness=0.38)
 
     lat_w = np.clip(lat + (lat_warp  - 0.5) * warp_y * 2.0
                        + (lon_drift  - 0.5) * warp_x, 0.0, 1.0)
 
-    # Primary bands (sine on warped latitude)
-    b1 = 0.5 + 0.5 * np.sin(lat_w * np.pi * band_count * 2.0)
-    # Harmonic enrichment
-    b2 = 0.5 + 0.5 * np.sin(lat_w * np.pi * band_count * 3.13 + 0.9)
-    b3 = 0.5 + 0.5 * np.sin(lat_w * np.pi * band_count * 5.71 + 1.5)
-    bands = b1 * 0.58 + b2 * 0.28 + b3 * 0.14
+    # PRIMARY bands — single sine only.  Harmonics average out and kill contrast.
+    primary = 0.5 + 0.5 * np.sin(lat_w * np.pi * band_count * 2.0)
 
-    # Cloud-cell texture within bands (horizontally stretched FBM)
+    # Sub-band detail at 2× frequency (fine structure within each band)
+    sub = 0.5 + 0.5 * np.sin(lat_w * np.pi * band_count * 4.1 + 0.6)
+
+    # Cloud-cell texture — horizontally stretched, very low weight
     cells = fbm_horizontal(width, height, seed + 4, h_stretch=3.5,
-                            octaves=8, roughness=0.60)
+                            octaves=7, roughness=0.60)
 
-    result = bands * 0.62 + cells * 0.38
+    # Bands dominate: primary 78%, sub 12%, cells 10%
+    result = primary * 0.78 + sub * 0.12 + cells * 0.10
     lo, hi = result.min(), result.max()
     return (result - lo) / (hi - lo) if hi > lo else result
 
@@ -224,6 +227,11 @@ def generate_gas_world(name, seed, band_count, band_colors, cell_colors=None,
     lo, hi = field.min(), field.max()
     field = (field - lo) / (hi - lo) if hi > lo else field
 
+    # Contrast sharpening — push pixels toward dark or bright extremes.
+    # tanh with k=4 creates nearly-bimodal distribution: dark belts stay dark,
+    # bright zones stay bright, transitions are sharp (Jool-style crisp edges).
+    field = 0.5 + 0.5 * np.tanh((field - 0.5) * 4.0)
+
     # Apply band colormap
     color = apply_colormap(field, band_colors)
 
@@ -348,99 +356,82 @@ def main():
 
     # Adrian (TauCetiE) — THE GREEN PLANET
     # Film: overwhelming lime-green sphere, completely covered in Astrophage.
-    # Looks like a lime-green Jupiter — vivid banding, sharp swirls.
+    # Target look: Jool but lime-green — bold dark forest belts, vivid lime zones.
+    # With tanh contrast: dark (<0.35) = near-black forest, bright (>0.65) = vivid lime.
     generate_gas_world(
         name        = "TauCetiE",
         seed        = 91,
-        band_count  = 10,
-        warp_y      = 0.20,
-        warp_x      = 0.05,
+        band_count  = 8,
+        warp_y      = 0.12,
+        warp_x      = 0.03,
         band_colors = [
-            (0.00, ( 14,  55,   6)),   # deep forest — darkest band
-            (0.12, ( 22,  78,  10)),
-            (0.24, ( 36, 108,  16)),
-            (0.36, ( 52, 140,  22)),
-            (0.48, ( 70, 168,  28)),   # mid lime
-            (0.60, ( 88, 195,  34)),
-            (0.72, (108, 218,  40)),
-            (0.84, (128, 238,  46)),
-            (0.93, (145, 250,  50)),
-            (1.00, (158, 255,  54)),   # brightest lime — crest
+            (0.00, (  4,  20,   2)),   # near-black forest belt
+            (0.18, (  7,  35,   4)),   # very dark green
+            (0.35, ( 18,  75,  10)),   # dark-to-mid transition
+            (0.50, ( 55, 160,  22)),   # mid (tanh keeps few pixels here)
+            (0.65, (110, 230,  38)),   # bright lime zone
+            (0.82, (148, 252,  48)),   # vivid lime
+            (1.00, (162, 255,  52)),   # peak lime — zone crests
         ],
-        cell_colors = [
-            (0.00, ( 80, 190,  28)),
-            (0.40, (118, 230,  42)),
-            (0.75, (148, 248,  52)),
-            (1.00, (168, 255,  58)),
-        ],
+        cell_colors = None,
         swirls = [
-            # (cx, cy, radius, strength)
-            (0.30, 0.57, 0.09, +2.0),   # large anticyclone — Great Spot equivalent
-            (0.65, 0.42, 0.06, -1.4),   # mid cyclone
-            (0.12, 0.62, 0.05, +1.6),   # northern swirl
-            (0.80, 0.35, 0.04, -1.1),   # small southern cyclone
+            (0.30, 0.57, 0.09, +2.2),   # large anticyclone (Great Green Spot)
+            (0.65, 0.42, 0.06, -1.5),   # mid cyclone
+            (0.12, 0.62, 0.05, +1.7),   # northern swirl
+            (0.80, 0.35, 0.04, -1.2),   # small southern cyclone
         ],
         normal_strength = 1.0,
     )
 
     # Erid (EridianHome) — Rocky's homeworld
     # Book: near-lightless, pitch-black volcanic surface under 28 atm ammonia smog.
-    # Should look like a dark, stormy Jupiter wrapped in orange-brown murk.
+    # Target: dark stormy Jupiter — near-black belts, dull amber zones. Dramatic.
     generate_gas_world(
         name        = "EridianHome",
         seed        = 67,
         band_count  = 7,
-        warp_y      = 0.22,
-        warp_x      = 0.06,
+        warp_y      = 0.14,
+        warp_x      = 0.04,
         band_colors = [
-            (0.00, ( 18,  10,   3)),   # near-black volcanic depth
-            (0.14, ( 35,  20,   6)),
-            (0.28, ( 58,  35,  12)),
-            (0.42, ( 82,  52,  18)),   # dark amber
-            (0.56, (108,  70,  25)),
-            (0.70, (135,  88,  33)),
-            (0.82, (158, 105,  42)),
-            (1.00, (178, 122,  50)),   # brightest amber (storm crests)
+            (0.00, (  5,   2,   1)),   # near-black volcanic belt
+            (0.18, ( 15,   8,   2)),   # very dark
+            (0.35, ( 40,  22,   6)),   # dark amber transition
+            (0.50, ( 80,  48,  15)),   # mid amber (tanh pushes away from this)
+            (0.65, (130,  80,  28)),   # bright amber zone
+            (0.82, (162, 102,  38)),   # vivid amber
+            (1.00, (178, 115,  44)),   # storm crest amber
         ],
-        cell_colors = [
-            (0.00, ( 55,  32,  10)),
-            (0.50, ( 95,  58,  20)),
-            (1.00, (145,  95,  38)),
-        ],
+        cell_colors = None,
         swirls = [
-            (0.48, 0.50, 0.11, +2.4),  # massive planet-spanning storm
-            (0.20, 0.58, 0.07, -1.8),
-            (0.72, 0.40, 0.06, +1.6),
-            (0.35, 0.32, 0.05, -1.2),
+            (0.48, 0.50, 0.11, +2.5),  # massive planet-spanning storm
+            (0.20, 0.58, 0.07, -1.9),
+            (0.72, 0.40, 0.06, +1.7),
+            (0.35, 0.32, 0.05, -1.3),
         ],
         normal_strength = 0.9,
     )
 
     # Tau Ceti c — Venus analog, 50 atm sulfuric acid clouds
-    # Looks like a golden-amber gas world — thick, dense, bright from space.
+    # Target: golden-amber gas world — dark caramel belts, bright pale-gold zones.
     generate_gas_world(
         name        = "TauCetiC",
         seed        = 33,
-        band_count  = 5,           # fewer bands — dense uniform Venus-like atmosphere
-        warp_y      = 0.10,
-        warp_x      = 0.03,
+        band_count  = 6,
+        warp_y      = 0.08,
+        warp_x      = 0.02,
         band_colors = [
-            (0.00, ( 75,  48,  10)),   # dark amber-brown
-            (0.22, (108,  74,  20)),
-            (0.42, (145, 105,  35)),   # mid amber
-            (0.60, (175, 135,  52)),
-            (0.76, (205, 165,  68)),
-            (0.88, (225, 188,  82)),
-            (1.00, (242, 210,  95)),   # pale gold cloud-top
+            (0.00, ( 35,  20,   4)),   # dark caramel belt
+            (0.18, ( 65,  40,  10)),   # dark amber
+            (0.35, (110,  75,  22)),   # mid transition
+            (0.50, (165, 128,  45)),   # mid gold
+            (0.65, (205, 168,  68)),   # bright gold zone
+            (0.82, (228, 195,  82)),   # vivid pale gold
+            (1.00, (245, 215,  95)),   # peak cloud-top gold
         ],
-        cell_colors = [
-            (0.00, (145, 108,  38)),
-            (0.50, (198, 158,  65)),
-            (1.00, (238, 205,  92)),
-        ],
+        cell_colors = None,
         swirls = [
-            (0.40, 0.52, 0.08, +1.4),
-            (0.72, 0.45, 0.05, -1.0),
+            (0.40, 0.52, 0.08, +1.5),
+            (0.72, 0.45, 0.05, -1.1),
         ],
         normal_strength = 0.8,
     )
